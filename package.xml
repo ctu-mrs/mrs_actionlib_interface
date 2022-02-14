@@ -16,6 +16,8 @@
   <depend>nodelet</depend>
   <depend>mrs_msgs</depend>
   <depend>mrs_lib</depend>
+  <depend>actionlib</depend>
+  <depend>actionlib_msgs</depend>
 
   <export>
 

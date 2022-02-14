@@ -10,20 +10,11 @@
   <arg unless="$(arg DEBUG)" name="launch_prefix_debug" value=""/>
   <arg     if="$(arg DEBUG)" name="launch_prefix_debug" value="debug_roslaunch"/>
 
-    <!-- will it run as standalone nodelet or using a nodelet manager? -->
-  <arg name="standalone" default="true" />
-  <arg name="manager" default="$(arg UAV_NAME)_waypointflier_manager" />
-  <arg name="n_threads" default="8" />
-  <arg unless="$(arg standalone)" name="nodelet" value="load"/>
-  <arg     if="$(arg standalone)" name="nodelet" value="standalone"/>
-  <arg unless="$(arg standalone)" name="nodelet_manager" value="$(arg manager)"/>
-  <arg     if="$(arg standalone)" name="nodelet_manager" value=""/>
 
     <!-- Namespace - all topics, services and parameters will be remapped using this namespace as a prefix (eg.: "/mrs_actionlib_interface/odom_uav_in" to "/uav1/mrs_actionlib_interface/odom_uav_in") -->
   <group ns="$(arg UAV_NAME)">
 
-    <!-- MrsActionlibInterface nodelet -->
-    <node pkg="nodelet" type="nodelet" name="mrs_actionlib_interface" args="$(arg nodelet) mrs_actionlib_interface/MrsActionlibInterface $(arg nodelet_manager)" launch-prefix="$(arg launch_prefix_debug)" output="screen">
+      <node name="mrs_actionlib_interface" pkg="mrs_actionlib_interface" type="mrs_actionlib_interface" output="screen">
 
       <!-- Parameters loaded from launch file -->
       <param name="uav_name" value="$(arg UAV_NAME)" />

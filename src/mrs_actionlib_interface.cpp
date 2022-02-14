@@ -1,38 +1,38 @@
-/* includes //{ */
-
 /* each ros package must have these */
 #include <ros/ros.h>
 #include <ros/package.h>
-#include <nodelet/nodelet.h>
 
-//}
-
-namespace mrs_actionlib_interface
-{
+#include <mrs_actionlib_interface/gotoAction.h>
+#include <actionlib/server/simple_action_server.h>
 
 /* class MrsActionlibInterface //{ */
 
-class MrsActionlibInterface : public nodelet::Nodelet {
+class MrsActionlibInterface {
 
 public:
-  /* onInit() is called when nodelet is launched (similar to main() in regular node) */
-  virtual void onInit();
+  MrsActionlibInterface();
 
 private:
-  /* flags */
+  ros::NodeHandle nh_;
+
+  std::string       _uav_name_;
   std::atomic<bool> is_initialized_ = false;
 
-  /* ros parameters */
-  std::string _uav_name_;
+  // | --------------------- actionlib stuff -------------------- |
+  //
 
-  /* mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics> sh_control_manager_diag_; */
-
-  /* void callbackControlManagerDiag(mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>& sh); */
+  typedef actionlib::SimpleActionServer<mrs_actionlib_interface::gotoAction> GotoServer;
+  void                                                                       actionCallbackGoto();
+  void                                                                       actionCallbackPreemptGoto();
+  std::unique_ptr<GotoServer>                                                goto_server_ptr_;
+  mrs_actionlib_interface::gotoGoal                                          action_server_goto_goal_;
+  mrs_actionlib_interface::gotoFeedback                                      action_server_goto_feedback_;
+  mrs_actionlib_interface::gotoResult                                        action_server_goto_result_;
 
   // | --------------------- timer callbacks -------------------- |
 
-  void           callbackMainTimer(const ros::TimerEvent& te);
-  ros::Timer     main_timer_;
+  void       callbackMainTimer(const ros::TimerEvent& te);
+  ros::Timer main_timer_;
 
   // | ---------------- service server callbacks ---------------- |
 
@@ -43,20 +43,21 @@ private:
 
   ros::ServiceClient srv_client_land_;
   bool               _land_end_;
-
 };
 
 //}
 
 /* onInit() //{ */
 
-void MrsActionlibInterface::onInit() {
+MrsActionlibInterface::MrsActionlibInterface() {
 
   /* obtain node handle */
-  ros::NodeHandle nh = nodelet::Nodelet::getMTPrivateNodeHandle();
+  nh_ = ros::NodeHandle("~");
 
   /* waits for the ROS to publish clock */
   ros::Time::waitForValid();
+
+  ros::Subscriber scan_subscriber_;
 
   // | ------------------- load ros parameters ------------------ |
   /* (mrs_lib implementation checks whether the parameter was loaded or not) */
@@ -89,17 +90,20 @@ void MrsActionlibInterface::onInit() {
 
   // | -------------------- initialize timers ------------------- |
 
-  main_timer_ = nh.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackMainTimer, this);
+  main_timer_ = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackMainTimer, this);
 
 
   // | --------------- initialize service servers --------------- |
 
-  /* srv_server_start_waypoints_following_ = nh.advertiseService("start_waypoints_following_in", &MrsActionlibInterface::callbackStartWaypointFollowing, this); */
+  /* srv_server_start_waypoints_following_ = nh.advertiseService("start_waypoints_following_in", &MrsActionlibInterface::callbackStartWaypointFollowing, this);
+   */
 
   // | --------------- initialize service clients --------------- |
 
-  /* srv_client_land_ = nh.serviceClient<std_srvs::Trigger>("land_out"); */
-
+  goto_server_ptr_ = std::make_unique<GotoServer>(nh_, ros::this_node::getName(), false);
+  goto_server_ptr_->registerGoalCallback(boost::bind(&MrsActionlibInterface::actionCallbackGoto, this));
+  goto_server_ptr_->registerPreemptCallback(boost::bind(&MrsActionlibInterface::actionCallbackPreemptGoto, this));
+  goto_server_ptr_->start();
   ROS_INFO_ONCE("[MrsActionlibInterface]: initialized");
 
   is_initialized_ = true;
@@ -139,9 +143,39 @@ void MrsActionlibInterface::onInit() {
 
 //}
 
+
+/*  actionCallbackGoto()//{ */
+
+void MrsActionlibInterface::actionCallbackGoto() {
+
+  boost::shared_ptr<const mrs_actionlib_interface::gotoGoal> temp = goto_server_ptr_->acceptNewGoal();
+
+  action_server_goto_goal_ = *temp;
+
+  ROS_INFO("[MrsActionlibInterface]: got a new goal from the action server");
+
+  /* as->setSucceeded(); */
+}
+
+//}
+
+/*  actionCallbackGoto()//{ */
+
+void MrsActionlibInterface::actionCallbackPreemptGoto() {
+
+  if (goto_server_ptr_->isActive()) {
+
+    ROS_INFO_ONCE("[MrsActionlibInterface]: preempted");
+
+    // abort the mission
+    goto_server_ptr_->setPreempted();
+  }
+}
+
+//}
 // | --------------------- timer callbacks -------------------- |
 
-/* callbackTimerIdling() //{ */
+/* callbackMainTimer() //{ */
 
 void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerEvent& te) {
 
@@ -185,8 +219,11 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
 
 //}
 
-}  // namespace mrs_actionlib_interface
-
-/* every nodelet must include macros which export the class as a nodelet plugin */
-#include <pluginlib/class_list_macros.h>
-PLUGINLIB_EXPORT_CLASS(mrs_actionlib_interface::MrsActionlibInterface, nodelet::Nodelet);
+int main(int argc, char** argv) {
+  ros::init(argc, argv, "mrs_actionlib_interface");
+  MrsActionlibInterface interface;
+  while (ros::ok()) {
+    ros::spin();
+    return 0;
+  }
+}

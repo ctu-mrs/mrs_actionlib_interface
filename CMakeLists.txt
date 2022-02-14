@@ -6,10 +6,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(catkin REQUIRED COMPONENTS
   roscpp
-  nodelet
   mrs_msgs
   mrs_lib
+  genmsg
+  actionlib_msgs
   )
+
+add_action_files(DIRECTORY action FILES goto.action)
+generate_messages(DEPENDENCIES actionlib_msgs)
 
 catkin_package(
   INCLUDE_DIRS include
@@ -29,7 +33,8 @@ include_directories(
 ## Declare a C++ library
 add_library(MrsActionlibInterface src/mrs_actionlib_interface.cpp)
 
-## Specify libraries to link a library or executable target against
-target_link_libraries(MrsActionlibInterface
+add_executable(mrs_actionlib_interface src/mrs_actionlib_interface.cpp)
+add_dependencies(mrs_actionlib_interface ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(mrs_actionlib_interface
   ${catkin_LIBRARIES}
-  )
+)

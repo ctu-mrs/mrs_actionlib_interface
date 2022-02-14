@@ -1,0 +1,10 @@
+# Define the goal
+float64 goto_x
+float64 goto_y
+float64 goto_z
+---
+# Define the result
+bool goal_reached
+---
+# Define a feedback message
+float64 percent_complete
