@@ -7,12 +7,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   mrs_msgs
+  mavros_msgs
   mrs_lib
   genmsg
   actionlib_msgs
   )
 
-add_action_files(DIRECTORY action FILES goto.action)
+add_action_files(DIRECTORY action FILES command.action)
 generate_messages(DEPENDENCIES actionlib_msgs)
 
 catkin_package(

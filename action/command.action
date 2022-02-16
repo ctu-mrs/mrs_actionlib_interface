@@ -1,10 +1,17 @@
 # Define the goal
+uint8 COMMAND_TAKEOFF=0
+uint8 COMMAND_LAND=1
+uint8 COMMAND_GOTO=2
+uint8 command
+
 float64 goto_x
 float64 goto_y
 float64 goto_z
 ---
 # Define the result
-bool goal_reached
+bool success
+string message
 ---
 # Define a feedback message
 float64 percent_complete
+string message
