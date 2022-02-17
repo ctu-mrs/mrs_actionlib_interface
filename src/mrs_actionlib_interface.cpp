@@ -6,9 +6,14 @@
 #include <actionlib/server/simple_action_server.h>
 
 #include <mrs_msgs/ControlManagerDiagnostics.h>
+#include <mrs_msgs/ValidateReference.h>
+
 #include <mavros_msgs/CommandBool.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
+
+#include <std_srvs/SetBool.h>
+#include <std_srvs/Trigger.h>
 
 /* class MrsActionlibInterface //{ */
 
@@ -20,15 +25,34 @@ public:
 private:
   ros::NodeHandle nh_;
 
-  std::string       _uav_name_;
+  std::string _uav_name_;
+  std::string _run_type_;
+  bool        _simulation_ = false;
+
   std::atomic<bool> is_initialized_ = false;
 
   bool have_all_data_ = false;
 
   bool have_new_goal_ = false;
 
-  bool landoff_in_progress_ = false;
-  bool goto_in_progress_    = false;
+  bool takeoff_in_progress_ = false;
+  bool landing_in_progress_ = false;
+
+  bool      armed_ = false;
+  ros::Time armed_time_;
+  double    armed_timeout_secs_ = 3.0;
+
+  bool      offboard_ = false;
+  ros::Time offboard_time_;
+  bool      set_offboard_called_ = false;
+
+
+  ros::Time motors_on_time_;
+
+  bool motors_ = false;
+
+
+  bool goto_in_progress_ = false;
 
   ros::Time arming_time_;
 
@@ -41,9 +65,32 @@ private:
     UNKNOWN
   } uav_state;
 
-  const std::vector<std::string> uav_state_str{"LANDED", "TAKEOFF_LANDING", "IDLE_FLYING", "GOTO", "UNKNOWN"};
+  typedef enum
+  {
+    TAKEOFF_INITIAL,
+    ARMED,
+    ARMED_MOTORS,
+    ARMED_MOTORS_OFFBOARD,
+    TAKING_OFF,
+    TAKEOFF_FINISHED
+  } takeoff_state;
 
-  uav_state state_ = UNKNOWN;
+  typedef enum
+  {
+    LANDING_INITIAL,
+    LANDING,
+    LANDING_FINISHED
+  } landing_state;
+
+  std::string last_tracker_ = "NullTracker";
+
+  const std::vector<std::string> uav_state_str{"LANDED", "TAKEOFF_LANDING", "IDLE_FLYING", "GOTO", "UNKNOWN"};
+  const std::vector<std::string> takeoff_state_str{"TAKEOFF_INITIAL", "ARMED", "ARMED_MOTORS", "ARMED_MOTORS_OFFBOARD", "TAKING_OFF", "TAKEOFF_FINISHED"};
+  const std::vector<std::string> landing_state_str{"LANDING_INITIAL", "LANDING", "LANDING_FINISHED"};
+
+  uav_state     state_         = UNKNOWN;
+  takeoff_state takeoff_state_ = TAKEOFF_INITIAL;
+  landing_state landing_state_ = LANDING_INITIAL;
 
   // | --------------------- actionlib stuff -------------------- |
   //
@@ -75,20 +122,39 @@ private:
   // | --------------------- timer callbacks -------------------- |
 
   void callbackMainTimer(const ros::TimerEvent& te);
+  void callbackTakeoffTimer(const ros::TimerEvent& te);
+  void callbackLandingTimer(const ros::TimerEvent& te);
   void callbackFeedbackTimer(const ros::TimerEvent& te);
 
   ros::Timer main_timer_;
-  ros::Timer feedback_timer_;
+  ros::Timer takeoff_timer_;
+  ros::Timer landing_timer_;
 
   // | --------------------- service clients -------------------- |
 
   ros::ServiceClient srv_client_mavros_arm_;
   ros::ServiceClient srv_client_mavros_set_mode_;
+  ros::ServiceClient srv_client_validate_reference_;
+  ros::ServiceClient srv_client_motors_;
+  ros::ServiceClient srv_client_takeoff_;
+  ros::ServiceClient srv_client_land_;
+
 
   // | --------------------- misc routines -------------------- |
 
-  void changeState(uav_state new_state);
+  void changeMainState(uav_state new_state);
+  void changeTakeoffState(takeoff_state new_state);
+  void changeLandingState(landing_state new_state);
+
+  bool validateReference();
+  bool setMotors(const bool value);
+
+  bool disarm();
   bool takeoff();
+
+  void info_takeoff(std::string);
+  void info_takeoff(double rate, std::string);
+  void error_takeoff(std::string);
 };
 
 //}
@@ -101,6 +167,17 @@ MrsActionlibInterface::MrsActionlibInterface() {
 
   ros::Time::waitForValid();
 
+  nh_.getParam("uav_name", _uav_name_);
+  nh_.getParam("run_type", _run_type_);
+
+  ROS_INFO_STREAM("[MrsActionlibInterface]: runtype: " << _run_type_);
+
+  if (_run_type_ == "simulation") {
+    _simulation_ = true;
+    ROS_INFO_STREAM("[MrsActionlibInterface]: in if: ");
+  }
+  ROS_INFO_STREAM("[MrsActionlibInterface]: sim: " << _simulation_);
+
   // | --------------------- subscribers -------------------- |
 
   control_manager_diag_subscriber_ =
@@ -110,11 +187,16 @@ MrsActionlibInterface::MrsActionlibInterface() {
 
   // | --------------------- timer callbacks -------------------- |
 
-  main_timer_ = nh_.createTimer(ros::Rate(1), &MrsActionlibInterface::callbackMainTimer, this);
-  /* main_timer_ = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackFeedbackTimer, this); */
+  main_timer_    = nh_.createTimer(ros::Rate(1), &MrsActionlibInterface::callbackMainTimer, this);
+  takeoff_timer_ = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackTakeoffTimer, this);
+  landing_timer_ = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackLandingTimer, this);
 
-  srv_client_mavros_arm_      = nh_.serviceClient<mavros_msgs::CommandBool>("mavros_arm_out");
-  srv_client_mavros_set_mode_ = nh_.serviceClient<mavros_msgs::SetMode>("mavros_set_mode_out");
+  srv_client_mavros_arm_         = nh_.serviceClient<mavros_msgs::CommandBool>("mavros_arm_out");
+  srv_client_mavros_set_mode_    = nh_.serviceClient<mavros_msgs::SetMode>("mavros_set_mode_out");
+  srv_client_validate_reference_ = nh_.serviceClient<mrs_msgs::ValidateReference>("validate_reference_out");
+  srv_client_motors_             = nh_.serviceClient<std_srvs::SetBool>("motors_out");
+  srv_client_takeoff_            = nh_.serviceClient<std_srvs::Trigger>("takeoff_out");
+  srv_client_land_               = nh_.serviceClient<std_srvs::Trigger>("land_out");
 
   command_server_ptr_ = std::make_unique<CommandServer>(nh_, ros::this_node::getName(), false);
   command_server_ptr_->registerGoalCallback(boost::bind(&MrsActionlibInterface::actionCallbackGoal, this));
@@ -189,6 +271,22 @@ void MrsActionlibInterface::actionCallbackGoal() {
     return;
   }
 
+  if (landing_in_progress_) {
+    action_server_result_.success = false;
+    action_server_result_.message = "Landing is in progress, cannot accept a new goal!";
+    ROS_ERROR("[MrsActionlibInterface]: Landing is in progress, cannot accept a new goal!");
+    command_server_ptr_->setAborted(action_server_result_);
+    return;
+  }
+
+  if (takeoff_in_progress_) {
+    action_server_result_.success = false;
+    action_server_result_.message = "Takeoff is in progress, cannot accept a new goal!";
+    ROS_ERROR("[MrsActionlibInterface]: Takeoff is in progress, cannot accept a new goal!");
+    command_server_ptr_->setAborted(action_server_result_);
+    return;
+  }
+
   if (action_server_goal_.command == _ACTION_SERVER_GOAL_.COMMAND_TAKEOFF || action_server_goal_.command == _ACTION_SERVER_GOAL_.COMMAND_LAND ||
       action_server_goal_.command == _ACTION_SERVER_GOAL_.COMMAND_GOTO) {
 
@@ -242,15 +340,15 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
     // determine the initial state of the UAV once we have all the necesary data
 
     if (control_manager_diag_.active_tracker == "NullTracker") {
-      changeState(LANDED);
+      changeMainState(LANDED);
     }
 
     if (control_manager_diag_.flying_normally == true) {
-      changeState(IDLE_FLYING);
+      changeMainState(IDLE_FLYING);
     }
 
     if (control_manager_diag_.active_tracker == "LandoffTracker") {
-      changeState(TAKEOFF_LANDING);
+      changeMainState(TAKEOFF_LANDING);
     }
   }
 
@@ -259,33 +357,33 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
   /* deterministic state changes //{ */
 
   if (control_manager_diag_.active_tracker == "LandoffTracker" && state_ != TAKEOFF_LANDING) {
-    changeState(TAKEOFF_LANDING);
+    changeMainState(TAKEOFF_LANDING);
   }
 
   if (control_manager_diag_.flying_normally == true && state_ == TAKEOFF_LANDING) {
 
-    if (landoff_in_progress_) {
-      landoff_in_progress_          = false;
-      action_server_result_.success = true;
-      action_server_result_.message = "Takeoff completed";
-      ROS_INFO("[MrsActionlibInterface]: Takeoff completed");
-      command_server_ptr_->setSucceeded(action_server_result_);
-    }
+    /* if (landoff_in_progress_) { */
+    /*   landoff_in_progress_          = false; */
+    /*   action_server_result_.success = true; */
+    /*   action_server_result_.message = "Takeoff completed"; */
+    /*   ROS_INFO("[MrsActionlibInterface]: Takeoff completed"); */
+    /*   command_server_ptr_->setSucceeded(action_server_result_); */
+    /* } */
 
-    changeState(IDLE_FLYING);
+    changeMainState(IDLE_FLYING);
   }
 
   if (control_manager_diag_.active_tracker == "NullTracker" && state_ == TAKEOFF_LANDING) {
 
-    if (landoff_in_progress_) {
-      landoff_in_progress_          = false;
-      action_server_result_.success = true;
-      action_server_result_.message = "Landing completed";
-      ROS_INFO("[MrsActionlibInterface]: Landing completed");
-      command_server_ptr_->setSucceeded(action_server_result_);
-    }
+    /* if (landoff_in_progress_) { */
+    /*   landoff_in_progress_          = false; */
+    /*   action_server_result_.success = true; */
+    /*   action_server_result_.message = "Landing completed"; */
+    /*   ROS_INFO("[MrsActionlibInterface]: Landing completed"); */
+    /*   command_server_ptr_->setSucceeded(action_server_result_); */
+    /* } */
 
-    changeState(LANDED);
+    changeMainState(LANDED);
   }
 
   //}
@@ -315,22 +413,15 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
         ROS_INFO("[MrsActionlibInterface]: in switch for TAKEOFF");
         if (state_ != LANDED) {
 
-          ROS_ERROR("[MrsActionlibInterface]: The drone is not landed, it cannot takeoff!");
+          ROS_ERROR("[MrsActionlibInterface]: The UAV is not landed, it cannot takeoff!");
           action_server_result_.success = false;
-          action_server_result_.message = "Takeoff failed";
+          action_server_result_.message = "UAV is not landed! Takeoff failed";
           ROS_ERROR("[MrsActionlibInterface]: Takeoff failed");
           command_server_ptr_->setAborted(action_server_result_);
 
         } else {
 
-          landoff_in_progress_ = takeoff();
-
-          if (!landoff_in_progress_) {
-            action_server_result_.success = false;
-            action_server_result_.message = "Takeoff failed";
-            ROS_ERROR("[MrsActionlibInterface]: Takeoff failed");
-            command_server_ptr_->setAborted(action_server_result_);
-          }
+          takeoff_in_progress_ = true;
         }
         break;
       }
@@ -340,7 +431,21 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
         /* case LAND //{ */
 
       case _ACTION_SERVER_GOAL_.COMMAND_LAND: {
+
         ROS_INFO("[MrsActionlibInterface]: in switch for LAND");
+
+        if (state_ != IDLE_FLYING) {
+
+          ROS_ERROR("[MrsActionlibInterface]: The UAV is not flying, it cannot land!");
+          action_server_result_.success = false;
+          action_server_result_.message = "UAV is not flying, it cannot land! Landing failed";
+          ROS_ERROR("[MrsActionlibInterface]: Landing failed");
+          command_server_ptr_->setAborted(action_server_result_);
+
+        } else {
+
+          landing_in_progress_ = true;
+        }
         break;
       }
 
@@ -362,41 +467,249 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
 
 //}
 
-/* callbackLandoffTimer() //{ */
+/* callbackTakeoffTimer() //{ */
 
-bool MrsActionlibInterface::takeoff() {
+void MrsActionlibInterface::callbackTakeoffTimer([[maybe_unused]] const ros::TimerEvent& te) {
 
-  mavros_msgs::CommandBool command_bool_srv;
-  command_bool_srv.request.value = true;
-
-  ROS_WARN("[MrsActionlibInterface]: Calling for UAV arming!");
-
-  bool res = srv_client_mavros_arm_.call(command_bool_srv);
-
-  if (!res) {
-    ROS_ERROR("[MrsActionlibInterface]: Service call for arming failed!");
-    ROS_ERROR_STREAM("[MrsActionlibInterface]: response: " << command_bool_srv.response.result);
-    return false;
+  if (!takeoff_in_progress_) {
+    if (takeoff_state_ != TAKEOFF_INITIAL) {
+      changeTakeoffState(TAKEOFF_INITIAL);
+    }
+    return;
   }
 
-  ROS_WARN("[MrsActionlibInterface]: UAV armed!");
-  ros::Duration(1.0).sleep();  // Sleep for one second
+  switch (takeoff_state_) {
 
-  ROS_WARN("[MrsActionlibInterface]: Calling for Mavros offboard!");
+    case TAKEOFF_INITIAL: {
 
-  mavros_msgs::SetMode set_mode_srv;
-  set_mode_srv.request.base_mode   = 0;
-  set_mode_srv.request.custom_mode = "offboard";
+      // sanity check:
+      if (control_manager_diag_.active_tracker != "NullTracker") {
+        info_takeoff("Null tracker is not active, cannot takeoff!");
+        takeoff_in_progress_ = false;
+        break;
+      }
 
-  res = srv_client_mavros_set_mode_.call(set_mode_srv);
+      if (!validateReference()) {
+        info_takeoff("Reference is not valid!");
+        takeoff_in_progress_ = false;
+        break;
+      }
 
-  if (!res) {
-    ROS_ERROR("[MrsActionlibInterface]: Service call for offboard failed!");
-    return false;
+      if (_simulation_) {
+
+        mavros_msgs::CommandBool command_bool_srv;
+        command_bool_srv.request.value = true;
+
+        bool res = srv_client_mavros_arm_.call(command_bool_srv);
+
+        if (!res) {
+          error_takeoff("Service call for arming failed!");
+          disarm();
+          takeoff_in_progress_ = false;
+          break;
+        }
+      }
+
+      if (armed_) {
+        set_offboard_called_ = false;
+        changeTakeoffState(ARMED);
+      }
+
+
+      break;
+    }
+
+    case ARMED: {
+
+      bool res = setMotors(true);
+
+      if (!res) {
+
+        error_takeoff("[MrsActionlibInterface]: could not set motors ON");
+        disarm();
+        takeoff_in_progress_ = false;
+        break;
+
+      } else {
+        changeTakeoffState(ARMED_MOTORS);
+      }
+
+
+      break;
+    }
+
+    case ARMED_MOTORS: {
+
+      if (offboard_) {
+
+        info_takeoff("Offboard set!");
+        changeTakeoffState(ARMED_MOTORS_OFFBOARD);
+        break;
+      }
+
+      if (_simulation_ && !set_offboard_called_) {
+
+        set_offboard_called_ = true;
+        mavros_msgs::SetMode set_mode_srv;
+        set_mode_srv.request.base_mode   = 0;
+        set_mode_srv.request.custom_mode = "offboard";
+
+        info_takeoff("Setting offboard");
+        bool res = srv_client_mavros_set_mode_.call(set_mode_srv);
+
+        if (!res) {
+          error_takeoff("Service call for offboard failed!");
+          disarm();
+          takeoff_in_progress_ = false;
+          break;
+        }
+      }
+
+      if (armed_timeout_secs_ > (ros::Time::now() - armed_time_).toSec()) {
+        error_takeoff("Armed for too long without getting into offboard, disarming!");
+        disarm();
+        takeoff_in_progress_ = false;
+        break;
+      }
+
+      break;
+    }
+
+    case ARMED_MOTORS_OFFBOARD: {
+
+      std_srvs::Trigger srv;
+
+      bool res = srv_client_takeoff_.call(srv);
+
+      if (res) {
+
+        if (srv.response.success) {
+
+          changeTakeoffState(TAKING_OFF);
+          break;
+
+        } else {
+
+          error_takeoff("Taking off failed:" + std::string(srv.response.message));
+          takeoff_in_progress_ = false;
+          break;
+        }
+
+      } else {
+
+        error_takeoff(": service call for taking off failed");
+        takeoff_in_progress_ = false;
+        break;
+      }
+
+      break;
+    }
+    case TAKING_OFF: {
+      info_takeoff(1.0, "taking off");
+
+      if (control_manager_diag_.active_tracker != "LandoffTracker" && last_tracker_ == "LandoffTracker") {
+        changeTakeoffState(TAKEOFF_FINISHED);
+      }
+
+      last_tracker_ = control_manager_diag_.active_tracker;
+      break;
+    }
+    case TAKEOFF_FINISHED: {
+
+      action_server_result_.success = true;
+      action_server_result_.message = "Takeoff completed";
+      info_takeoff("Takeoff completed");
+      command_server_ptr_->setSucceeded(action_server_result_);
+
+      takeoff_in_progress_ = false;
+      changeMainState(IDLE_FLYING);
+      changeTakeoffState(TAKEOFF_INITIAL);
+      break;
+    }
+  }
+}
+
+//}
+
+/* callbackLandingTimer() //{ */
+
+void MrsActionlibInterface::callbackLandingTimer([[maybe_unused]] const ros::TimerEvent& te) {
+
+  if (!landing_in_progress_) {
+    if (landing_state_ != LANDING_INITIAL) {
+      changeLandingState(LANDING_INITIAL);
+    }
+    return;
   }
 
-  ROS_WARN("[MrsActionlibInterface]: Offboard set!");
-  return true;
+  switch (landing_state_) {
+
+    case LANDING_INITIAL: {
+
+      // sanity check:
+      if (control_manager_diag_.flying_normally != true) {
+        ROS_INFO("[MrsActionlibInterface]: Cannot land, not flying normally!");
+        landing_in_progress_ = false;
+        break;
+      }
+
+      ROS_INFO("[MrsActionlibInterface]: Call for landing");
+
+      std_srvs::Trigger srv;
+
+      bool res = srv_client_land_.call(srv);
+
+      if (res) {
+
+        if (srv.response.success) {
+
+          ROS_INFO("[MrsActionlibInterface]: Service call for landing successful");
+          changeLandingState(LANDING);
+
+        } else {
+
+          ROS_ERROR("[MrsActionlibInterface]: landing failed: %s", srv.response.message.c_str());
+          landing_in_progress_ = false;
+          break;
+        }
+
+      } else {
+
+        ROS_ERROR("[MrsActionlibInterface]: service call for landing failed");
+        landing_in_progress_ = false;
+        break;
+      }
+    }
+
+    case LANDING: {
+
+      ROS_INFO_THROTTLE(1.0, "[MrsActionlibInterface]: landing");
+
+      if (control_manager_diag_.active_tracker != "LandoffTracker" && last_tracker_ == "LandoffTracker") {
+        changeLandingState(LANDING_FINISHED);
+      }
+
+      last_tracker_ = control_manager_diag_.active_tracker;
+      break;
+    }
+
+    case LANDING_FINISHED: {
+
+      action_server_result_.success = true;
+      action_server_result_.message = "Landing completed";
+      ROS_INFO("[MrsActionlibInterface]: Landing completed");
+      command_server_ptr_->setSucceeded(action_server_result_);
+
+      landing_in_progress_ = false;
+      changeMainState(LANDED);
+      changeLandingState(LANDING_INITIAL);
+      break;
+
+    }
+
+
+    break;
+  }
 }
 
 //}
@@ -424,16 +737,183 @@ void MrsActionlibInterface::controlManagerDiagCallback(const mrs_msgs::ControlMa
 void MrsActionlibInterface::mavrosStateCallback(const mavros_msgs::StateConstPtr& msg) {
   got_mavros_state_ = true;
   mavros_state_     = *msg;
+
+  if (!armed_ && msg->armed) {
+    ros::Time armed_time_ = ros::Time::now();
+  }
+
+  if (!offboard_ && msg->mode == "OFFBOARD") {
+    ros::Time offboard_time_ = ros::Time::now();
+  }
+
+  offboard_ = msg->mode == "OFFBOARD" ? true : false;
+  armed_    = msg->armed;
 }
 
 //}
+
 // | -------------------- misc routines ------------------- |
 
-/* changeState() //{ */
+/* changeMainState() //{ */
 
-void MrsActionlibInterface::changeState(uav_state new_state) {
+void MrsActionlibInterface::changeMainState(uav_state new_state) {
   ROS_INFO_STREAM("[MrsActionlibInterface]: Changing state [" << uav_state_str[state_] << "] --) [" << uav_state_str[new_state] << "]");
   state_ = new_state;
+}
+
+//}
+
+/* changeTakeoffState() //{ */
+
+void MrsActionlibInterface::changeTakeoffState(takeoff_state new_state) {
+  std::stringstream tmp;
+  tmp << "Changing takeoff state [" << takeoff_state_str[takeoff_state_] << "] --) [" << takeoff_state_str[new_state] << "]";
+  info_takeoff(tmp.str());
+  takeoff_state_ = new_state;
+}
+
+//}
+
+/* changeLandingState() //{ */
+
+void MrsActionlibInterface::changeLandingState(landing_state new_state) {
+  ROS_INFO_STREAM("[MrsActionlibInterface]: Changing landing state [" << landing_state_str[takeoff_state_] << "] --) [" << landing_state_str[new_state] << "]");
+  landing_state_ = new_state;
+}
+
+//}
+
+/* validateReference() //{ */
+
+bool MrsActionlibInterface::validateReference() {
+
+  mrs_msgs::ValidateReference srv_out;
+
+  srv_out.request.reference.header.frame_id = "fcu";
+
+  bool res = srv_client_validate_reference_.call(srv_out);
+
+  if (res) {
+
+    if (srv_out.response.success) {
+
+      ROS_INFO_THROTTLE(1.0, "[MrsActionlibInterface]: current position is valid");
+      return true;
+
+    } else {
+
+      ROS_ERROR_THROTTLE(1.0, "[MrsActionlibInterface]: current position is not valid (safety area, bumper)!");
+      return false;
+    }
+
+  } else {
+
+    ROS_ERROR_THROTTLE(1.0, "[MrsActionlibInterface]: current position could not be validated");
+    return false;
+  }
+}
+
+//}
+
+/* disarm() //{ */
+
+bool MrsActionlibInterface::disarm() {
+
+  if (!got_mavros_state_) {
+
+    ROS_WARN_THROTTLE(1.0, "[MrsActionlibInterface]: cannot disarm, missing mavros state!");
+
+    return false;
+  }
+
+  if (offboard_) {
+
+    ROS_WARN_THROTTLE(1.0, "[MrsActionlibInterface]: cannot disarm, not in offboard mode!");
+
+    return false;
+  }
+
+  ROS_INFO_THROTTLE(1.0, "[MrsActionlibInterface]: disarming");
+
+  mavros_msgs::CommandBool srv;
+  srv.request.value = 0;
+
+  bool res = srv_client_mavros_arm_.call(srv);
+
+  if (res) {
+
+    if (srv.response.success) {
+
+      return true;
+
+    } else {
+
+      ROS_ERROR_THROTTLE(1.0, "[MrsActionlibInterface]: disarming failed");
+    }
+
+  } else {
+
+    ROS_ERROR_THROTTLE(1.0, "[MrsActionlibInterface]: service call for disarming failed");
+  }
+
+  return false;
+}
+
+//}
+
+/* info_takeoff() //{ */
+
+void MrsActionlibInterface::info_takeoff(std::string info) {
+  ROS_INFO_STREAM("[MrsActionlibInterface]-------------->[TakeoffStateMachine]: " << info);
+}
+
+//}
+
+/* info_takeoff() //{ */
+
+void MrsActionlibInterface::info_takeoff(double rate, std::string info) {
+  ROS_INFO_STREAM_THROTTLE(rate, "[MrsActionlibInterface]-------------->[TakeoffStateMachine]: " << info);
+}
+
+//}
+
+/* error_takeoff() //{ */
+
+void MrsActionlibInterface::error_takeoff(std::string info) {
+  ROS_INFO_STREAM("[MrsActionlibInterface]-------------->[TakeoffStateMachine]: " << info);
+}
+
+//}
+
+/* setMotors() //{ */
+
+bool MrsActionlibInterface::setMotors(const bool value) {
+
+  ROS_INFO_THROTTLE(1.0, "[MrsActionlibInterface]: setting motors %s", value ? "ON" : "OFF");
+
+  std_srvs::SetBool srv;
+  srv.request.data = value;
+
+  bool res = srv_client_motors_.call(srv);
+
+  if (res) {
+
+    if (srv.response.success) {
+
+      ROS_INFO_THROTTLE(1.0, "[MrsActionlibInterface]: motors succesfully set to %s", value ? "ON" : "OFF");
+      return true;
+
+    } else {
+
+      ROS_ERROR_THROTTLE(1.0, "[MrsActionlibInterface]: setting motors failed: %s", srv.response.message.c_str());
+    }
+
+  } else {
+
+    ROS_ERROR_THROTTLE(1.0, "[MrsActionlibInterface]: service call for setting motors failed");
+  }
+
+  return false;
 }
 
 //}
