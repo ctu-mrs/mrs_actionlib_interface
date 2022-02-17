@@ -8,6 +8,7 @@
 #include <mrs_msgs/ControlManagerDiagnostics.h>
 #include <mavros_msgs/CommandBool.h>
 #include <mavros_msgs/SetMode.h>
+#include <mavros_msgs/State.h>
 
 /* class MrsActionlibInterface //{ */
 
@@ -23,6 +24,13 @@ private:
   std::atomic<bool> is_initialized_ = false;
 
   bool have_all_data_ = false;
+
+  bool have_new_goal_ = false;
+
+  bool landoff_in_progress_ = false;
+  bool goto_in_progress_    = false;
+
+  ros::Time arming_time_;
 
   typedef enum
   {
@@ -41,24 +49,36 @@ private:
   //
 
   typedef actionlib::SimpleActionServer<mrs_actionlib_interface::commandAction> CommandServer;
-  void                                                                          actionCallbackCommand();
-  void                                                                          actionCallbackPreemptCommand();
+  void                                                                          actionCallbackGoal();
+  void                                                                          actionCallbackPreempt();
   std::unique_ptr<CommandServer>                                                command_server_ptr_;
-  mrs_actionlib_interface::commandGoal                                          action_server_command_goal_;
-  mrs_actionlib_interface::commandFeedback                                      action_server_command_feedback_;
-  mrs_actionlib_interface::commandResult                                        action_server_command_result_;
+
+  static const mrs_actionlib_interface::commandGoal _ACTION_SERVER_GOAL_;
+  mrs_actionlib_interface::commandGoal              action_server_goal_;
+  mrs_actionlib_interface::commandFeedback          action_server_feedback_;
+  mrs_actionlib_interface::commandResult            action_server_result_;
 
   // | --------------------- subscribers -------------------- |
 
-  ros::Subscriber                     control_manager_diag_subscriber_;
+  ros::Subscriber control_manager_diag_subscriber_;
+  ros::Subscriber mavros_state_subscriber_;
+
   void                                controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnosticsConstPtr& msg);
   mrs_msgs::ControlManagerDiagnostics control_manager_diag_;
   bool                                got_control_manager_diag_ = false;
 
+  void               mavrosStateCallback(const mavros_msgs::StateConstPtr& msg);
+  mavros_msgs::State mavros_state_;
+  bool               got_mavros_state_ = true;
+
+
   // | --------------------- timer callbacks -------------------- |
 
-  void       callbackMainTimer(const ros::TimerEvent& te);
+  void callbackMainTimer(const ros::TimerEvent& te);
+  void callbackFeedbackTimer(const ros::TimerEvent& te);
+
   ros::Timer main_timer_;
+  ros::Timer feedback_timer_;
 
   // | --------------------- service clients -------------------- |
 
@@ -86,16 +106,19 @@ MrsActionlibInterface::MrsActionlibInterface() {
   control_manager_diag_subscriber_ =
       nh_.subscribe("control_manager_diag_in", 1, &MrsActionlibInterface::controlManagerDiagCallback, this, ros::TransportHints().tcpNoDelay());
 
+  mavros_state_subscriber_ = nh_.subscribe("mavros_state_in", 1, &MrsActionlibInterface::mavrosStateCallback, this, ros::TransportHints().tcpNoDelay());
+
   // | --------------------- timer callbacks -------------------- |
 
-  main_timer_ = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackMainTimer, this);
+  main_timer_ = nh_.createTimer(ros::Rate(1), &MrsActionlibInterface::callbackMainTimer, this);
+  /* main_timer_ = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackFeedbackTimer, this); */
 
   srv_client_mavros_arm_      = nh_.serviceClient<mavros_msgs::CommandBool>("mavros_arm_out");
   srv_client_mavros_set_mode_ = nh_.serviceClient<mavros_msgs::SetMode>("mavros_set_mode_out");
 
   command_server_ptr_ = std::make_unique<CommandServer>(nh_, ros::this_node::getName(), false);
-  command_server_ptr_->registerGoalCallback(boost::bind(&MrsActionlibInterface::actionCallbackCommand, this));
-  command_server_ptr_->registerPreemptCallback(boost::bind(&MrsActionlibInterface::actionCallbackPreemptCommand, this));
+  command_server_ptr_->registerGoalCallback(boost::bind(&MrsActionlibInterface::actionCallbackGoal, this));
+  command_server_ptr_->registerPreemptCallback(boost::bind(&MrsActionlibInterface::actionCallbackPreempt, this));
   command_server_ptr_->start();
   ROS_INFO_ONCE("[MrsActionlibInterface]: initialized");
 
@@ -138,41 +161,50 @@ MrsActionlibInterface::MrsActionlibInterface() {
 
 // | ---------------------- action server callbacks --------------------- |
 
-/*  actionCallbackCommand()//{ */
+/*  actionCallbackGoal()//{ */
 
-void MrsActionlibInterface::actionCallbackCommand() {
+void MrsActionlibInterface::actionCallbackGoal() {
+
+  have_new_goal_ = false;
 
   boost::shared_ptr<const mrs_actionlib_interface::commandGoal> temp = command_server_ptr_->acceptNewGoal();
 
-  action_server_command_goal_ = *temp;
+  action_server_goal_ = *temp;
+
   ROS_INFO("[MrsActionlibInterface]: got a new goal from the action server");
 
   if (!is_initialized_) {
-    action_server_command_result_.success = false;
-    action_server_command_result_.message = "Not initialized yet";
-    command_server_ptr_->setAborted(action_server_command_result_);
+    action_server_result_.success = false;
+    action_server_result_.message = "Not initialized yet";
+    ROS_ERROR("[MrsActionlibInterface]: not initialized yet");
+    command_server_ptr_->setAborted(action_server_result_);
     return;
   }
 
   if (!have_all_data_) {
-    action_server_command_result_.success = false;
-    action_server_command_result_.message = "Still waiting for some data";
-    command_server_ptr_->setAborted(action_server_command_result_);
+    action_server_result_.success = false;
+    action_server_result_.message = "Still waiting for some data";
+    ROS_ERROR("[MrsActionlibInterface]: still waiting for some data");
+    command_server_ptr_->setAborted(action_server_result_);
     return;
   }
- /* if feedback.type == sensor_msgs.msg.JoyFeedback.TYPE_LED and feedback.id < 4: */
-  /* int num_bools = 0; */
-  /* num_bools     = action_server_command_goal_.goto_cmd + action_server_command_goal_.land_cmd + action_server_command_goal_.goto_cmd; */
 
-  /* if (action_server_command_goal_.goto_cmd) { */
-  /* } */
+  if (action_server_goal_.command == _ACTION_SERVER_GOAL_.COMMAND_TAKEOFF || action_server_goal_.command == _ACTION_SERVER_GOAL_.COMMAND_LAND ||
+      action_server_goal_.command == _ACTION_SERVER_GOAL_.COMMAND_GOTO) {
+
+    have_new_goal_ = true;
+
+  } else {
+
+    ROS_ERROR("[MrsActionlibInterface]: got an unknown goal");
+  }
 }
 
 //}
 
-/*  actionCallbackPreemptCommand()//{ */
+/*  actionCallbackPreempt()//{ */
 
-void MrsActionlibInterface::actionCallbackPreemptCommand() {
+void MrsActionlibInterface::actionCallbackPreempt() {
 
   if (command_server_ptr_->isActive()) {
 
@@ -196,6 +228,11 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
     return;
   }
 
+  if (!got_mavros_state_) {
+    ROS_WARN_STREAM_THROTTLE(1.0, "[MrsActionlibInterface]: main timer: waiting for mavros_state!");
+    return;
+  }
+
   /* first run after we have all the data //{ */
 
   if (!have_all_data_) {
@@ -215,49 +252,119 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
     if (control_manager_diag_.active_tracker == "LandoffTracker") {
       changeState(TAKEOFF_LANDING);
     }
-    takeoff();
   }
 
   //}
+
+  /* deterministic state changes //{ */
 
   if (control_manager_diag_.active_tracker == "LandoffTracker" && state_ != TAKEOFF_LANDING) {
     changeState(TAKEOFF_LANDING);
   }
 
   if (control_manager_diag_.flying_normally == true && state_ == TAKEOFF_LANDING) {
+
+    if (landoff_in_progress_) {
+      landoff_in_progress_          = false;
+      action_server_result_.success = true;
+      action_server_result_.message = "Takeoff completed";
+      ROS_INFO("[MrsActionlibInterface]: Takeoff completed");
+      command_server_ptr_->setSucceeded(action_server_result_);
+    }
+
     changeState(IDLE_FLYING);
   }
+
+  if (control_manager_diag_.active_tracker == "NullTracker" && state_ == TAKEOFF_LANDING) {
+
+    if (landoff_in_progress_) {
+      landoff_in_progress_          = false;
+      action_server_result_.success = true;
+      action_server_result_.message = "Landing completed";
+      ROS_INFO("[MrsActionlibInterface]: Landing completed");
+      command_server_ptr_->setSucceeded(action_server_result_);
+    }
+
+    changeState(LANDED);
+  }
+
+  //}
+
+  /* new goal //{ */
+
+  if (have_new_goal_) {
+
+    have_new_goal_ = false;
+
+    switch (action_server_goal_.command) {
+
+        /* case GOTO //{ */
+
+      case _ACTION_SERVER_GOAL_.COMMAND_GOTO: {
+
+        ROS_INFO("[MrsActionlibInterface]: in switch for GOTO");
+        break;
+      }
+
+        //}
+
+        /* case TAKEOFF //{ */
+
+      case _ACTION_SERVER_GOAL_.COMMAND_TAKEOFF: {
+
+        ROS_INFO("[MrsActionlibInterface]: in switch for TAKEOFF");
+        if (state_ != LANDED) {
+
+          ROS_ERROR("[MrsActionlibInterface]: The drone is not landed, it cannot takeoff!");
+          action_server_result_.success = false;
+          action_server_result_.message = "Takeoff failed";
+          ROS_ERROR("[MrsActionlibInterface]: Takeoff failed");
+          command_server_ptr_->setAborted(action_server_result_);
+
+        } else {
+
+          landoff_in_progress_ = takeoff();
+
+          if (!landoff_in_progress_) {
+            action_server_result_.success = false;
+            action_server_result_.message = "Takeoff failed";
+            ROS_ERROR("[MrsActionlibInterface]: Takeoff failed");
+            command_server_ptr_->setAborted(action_server_result_);
+          }
+        }
+        break;
+      }
+
+        //}
+
+        /* case LAND //{ */
+
+      case _ACTION_SERVER_GOAL_.COMMAND_LAND: {
+        ROS_INFO("[MrsActionlibInterface]: in switch for LAND");
+        break;
+      }
+
+        //}
+
+        /* case default //{ */
+
+      default: {
+        ROS_INFO("[MrsActionlibInterface]: in switch for UNKNOWN");
+        break;
+      }
+
+        //}
+    }
+  }
+
+  //}
 }
 
 //}
 
-// | -------------------- topic callbacks ------------------- |
-
-/*  controlManagerDiagCallback()//{ */
-
-void MrsActionlibInterface::controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnosticsConstPtr& msg) {
-  got_control_manager_diag_ = true;
-  control_manager_diag_     = *msg;
-}
-
-//}
-
-// | -------------------- misc routines ------------------- |
-
-/* takeoff() //{ */
+/* callbackLandoffTimer() //{ */
 
 bool MrsActionlibInterface::takeoff() {
-  ROS_INFO("[MrsActionlibInterface]: calling for takeof");
-
-  if (!have_all_data_) {
-    ROS_ERROR("[MrsActionlibInterface]: some data is missing, cannot initiate takeoff!");
-    return false;
-  }
-
-  if (state_ != LANDED) {
-    ROS_ERROR("[MrsActionlibInterface]: The drone is not landed, it cannot takeoff!");
-    return false;
-  }
 
   mavros_msgs::CommandBool command_bool_srv;
   command_bool_srv.request.value = true;
@@ -294,6 +401,34 @@ bool MrsActionlibInterface::takeoff() {
 
 //}
 
+/* callbackFeedbackTimer() //{ */
+
+void MrsActionlibInterface::callbackFeedbackTimer([[maybe_unused]] const ros::TimerEvent& te) {
+}
+
+//}
+
+// | -------------------- topic callbacks ------------------- |
+
+/*  controlManagerDiagCallback()//{ */
+
+void MrsActionlibInterface::controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnosticsConstPtr& msg) {
+  got_control_manager_diag_ = true;
+  control_manager_diag_     = *msg;
+}
+
+//}
+
+/*  mavrosStateCallback()//{ */
+
+void MrsActionlibInterface::mavrosStateCallback(const mavros_msgs::StateConstPtr& msg) {
+  got_mavros_state_ = true;
+  mavros_state_     = *msg;
+}
+
+//}
+// | -------------------- misc routines ------------------- |
+
 /* changeState() //{ */
 
 void MrsActionlibInterface::changeState(uav_state new_state) {
@@ -303,6 +438,8 @@ void MrsActionlibInterface::changeState(uav_state new_state) {
 
 //}
 
+/* main //{ */
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "mrs_actionlib_interface");
   MrsActionlibInterface interface;
@@ -311,3 +448,5 @@ int main(int argc, char** argv) {
     return 0;
   }
 }
+
+//}

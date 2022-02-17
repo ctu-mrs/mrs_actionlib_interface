@@ -25,8 +25,7 @@
 
         <!-- Subscribers (note that the topic names will also be remapped using the namespace as a prefix) -->
       <remap from="~control_manager_diag_in" to="control_manager/diagnostics" />
-      <!-- <remap from="~control_manager_diagnostics_in" to="control_manager/diagnostics" /> -->
-      <!-- <remap from="~odom_gt_in" to="ground_truth" /> -->
+      <remap from="~mavros_state_in" to="mavros/state" />
 
         <!-- Publishers (note that the topic names will also be remapped using the namespace as a prefix) -->
       <!-- <remap from="~reference_out" to="control_manager/reference" /> -->
