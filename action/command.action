@@ -7,6 +7,7 @@ uint8 command
 float64 goto_x
 float64 goto_y
 float64 goto_z
+float64 goto_hdg
 ---
 # Define the result
 bool success
