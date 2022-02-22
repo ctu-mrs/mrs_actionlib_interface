@@ -8,6 +8,7 @@
 #include <mrs_msgs/ControlManagerDiagnostics.h>
 #include <mrs_msgs/ValidateReference.h>
 #include <mrs_msgs/Vec4.h>
+#include <mrs_msgs/PathfinderDiagnostics.h>
 
 #include <mavros_msgs/CommandBool.h>
 #include <mavros_msgs/SetMode.h>
@@ -38,6 +39,7 @@ private:
 
   bool takeoff_in_progress_ = false;
   bool landing_in_progress_ = false;
+  bool goto_in_progress_ = false;
 
   bool      armed_ = false;
   ros::Time armed_time_;
@@ -51,9 +53,6 @@ private:
   ros::Time motors_on_time_;
 
   bool motors_ = false;
-
-
-  bool goto_in_progress_ = false;
 
   ros::Time arming_time_;
 
@@ -110,6 +109,7 @@ private:
 
   ros::Subscriber control_manager_diag_subscriber_;
   ros::Subscriber mavros_state_subscriber_;
+  ros::Subscriber pathfinder_diagnostics_subscriber_;
 
   void                                controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnosticsConstPtr& msg);
   mrs_msgs::ControlManagerDiagnostics control_manager_diag_;
@@ -119,17 +119,22 @@ private:
   mavros_msgs::State mavros_state_;
   bool               got_mavros_state_ = true;
 
+  void                            pathfinderDiagnosticsCallback(const mrs_msgs::PathfinderDiagnosticsConstPtr& msg);
+  mrs_msgs::PathfinderDiagnostics pathfinder_diagnostics_;
+  bool                            got_pathfinder_diagnostics_ = true;
 
   // | --------------------- timer callbacks -------------------- |
 
   void callbackMainTimer(const ros::TimerEvent& te);
   void callbackTakeoffTimer(const ros::TimerEvent& te);
   void callbackLandingTimer(const ros::TimerEvent& te);
+  void callbackGotoTimer(const ros::TimerEvent& te);
   void callbackFeedbackTimer(const ros::TimerEvent& te);
 
   ros::Timer main_timer_;
   ros::Timer takeoff_timer_;
   ros::Timer landing_timer_;
+  ros::Timer goto_timer_;
 
   // | --------------------- service clients -------------------- |
 
@@ -140,7 +145,6 @@ private:
   ros::ServiceClient srv_client_takeoff_;
   ros::ServiceClient srv_client_land_;
   ros::ServiceClient srv_client_pathfinder_goto_;
-
 
   // | --------------------- misc routines -------------------- |
 
@@ -190,12 +194,15 @@ MrsActionlibInterface::MrsActionlibInterface() {
       nh_.subscribe("control_manager_diag_in", 1, &MrsActionlibInterface::controlManagerDiagCallback, this, ros::TransportHints().tcpNoDelay());
 
   mavros_state_subscriber_ = nh_.subscribe("mavros_state_in", 1, &MrsActionlibInterface::mavrosStateCallback, this, ros::TransportHints().tcpNoDelay());
+  pathfinder_diagnostics_subscriber_ =
+      nh_.subscribe("pathfinder_diagnostics_in", 1, &MrsActionlibInterface::pathfinderDiagnosticsCallback, this, ros::TransportHints().tcpNoDelay());
 
   // | --------------------- timer callbacks -------------------- |
 
   main_timer_    = nh_.createTimer(ros::Rate(1), &MrsActionlibInterface::callbackMainTimer, this);
   takeoff_timer_ = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackTakeoffTimer, this);
   landing_timer_ = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackLandingTimer, this);
+  goto_timer_    = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackGotoTimer, this);
 
   srv_client_mavros_arm_         = nh_.serviceClient<mavros_msgs::CommandBool>("mavros_arm_out");
   srv_client_mavros_set_mode_    = nh_.serviceClient<mavros_msgs::SetMode>("mavros_set_mode_out");
@@ -744,6 +751,90 @@ void MrsActionlibInterface::callbackLandingTimer([[maybe_unused]] const ros::Tim
 
 //}
 
+/* callbackGotoTimer() //{ */
+
+void MrsActionlibInterface::callbackGotoTimer([[maybe_unused]] const ros::TimerEvent& te) {
+
+  if (!goto_in_progress_) {
+    return;
+  }
+    
+  /*   if (!landing_in_progress_) { */
+  /*     if (landing_state_ != LANDING_INITIAL) { */
+  /*       changeLandingState(LANDING_INITIAL); */
+  /*     } */
+  /*     return; */
+  /*   } */
+
+  /*   switch (landing_state_) { */
+
+  /*     case LANDING_INITIAL: { */
+
+  /*       // sanity check: */
+  /*       if (control_manager_diag_.flying_normally != true) { */
+  /*         abort_landing("Cannot land, not flying normally!"); */
+  /*         break; */
+  /*       } */
+
+  /*       info_landing("Call for landing"); */
+
+  /*       std_srvs::Trigger srv; */
+
+  /*       bool res = srv_client_land_.call(srv); */
+
+  /*       if (res) { */
+
+  /*         if (srv.response.success) { */
+
+  /*           info_landing("Service call for landing successful"); */
+  /*           changeLandingState(LANDING); */
+
+  /*         } else { */
+
+  /*           abort_landing("landing failed: " + std::string(srv.response.message)); */
+  /*           break; */
+  /*         } */
+
+  /*       } else { */
+
+  /*         abort_landing("service call for landing failed"); */
+  /*         break; */
+  /*       } */
+  /*     } */
+
+  /*     case LANDING: { */
+
+  /*       info_landing(1.0, "landing"); */
+
+  /*       if (control_manager_diag_.active_tracker != "LandoffTracker" && last_tracker_ == "LandoffTracker") { */
+  /*         changeLandingState(LANDING_FINISHED); */
+  /*       } */
+
+  /*       last_tracker_ = control_manager_diag_.active_tracker; */
+  /*       break; */
+  /*     } */
+
+  /*     case LANDING_FINISHED: { */
+
+  /*       action_server_result_.success = true; */
+  /*       action_server_result_.message = "Landing completed"; */
+  /*       info_landing("Landing completed"); */
+  /*       command_server_ptr_->setSucceeded(action_server_result_); */
+
+  /*       landing_in_progress_ = false; */
+  /*       changeMainState(LANDED); */
+  /*       changeLandingState(LANDING_INITIAL); */
+  /*       break; */
+
+  /*     } */
+
+
+  /*     break; */
+  /*   } */
+}
+
+//}
+
 /* callbackFeedbackTimer() //{ */
 
 void MrsActionlibInterface::callbackFeedbackTimer([[maybe_unused]] const ros::TimerEvent& te) {
@@ -778,6 +869,16 @@ void MrsActionlibInterface::mavrosStateCallback(const mavros_msgs::StateConstPtr
 
   offboard_ = msg->mode == "OFFBOARD" ? true : false;
   armed_    = msg->armed;
+}
+
+//}
+
+/*  pathfinderDiagnosticsCallback()//{ */
+
+void MrsActionlibInterface::pathfinderDiagnosticsCallback(const mrs_msgs::PathfinderDiagnosticsConstPtr& msg) {
+
+  got_pathfinder_diagnostics_ = true;
+  pathfinder_diagnostics_     = *msg;
 }
 
 //}
