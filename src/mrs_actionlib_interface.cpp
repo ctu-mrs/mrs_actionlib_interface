@@ -9,6 +9,7 @@
 #include <mrs_msgs/ValidateReference.h>
 #include <mrs_msgs/Vec4.h>
 #include <mrs_msgs/PathfinderDiagnostics.h>
+#include <mrs_msgs/UavState.h>
 
 #include <mavros_msgs/CommandBool.h>
 #include <mavros_msgs/SetMode.h>
@@ -37,9 +38,10 @@ private:
 
   bool have_new_goal_ = false;
 
-  bool takeoff_in_progress_ = false;
-  bool landing_in_progress_ = false;
-  bool goto_in_progress_ = false;
+  bool takeoff_in_progress_   = false;
+  bool landing_in_progress_   = false;
+  bool goto_in_progress_      = false;
+  bool fresh_pathfinder_diag_ = false;
 
   bool      armed_ = false;
   ros::Time armed_time_;
@@ -110,6 +112,7 @@ private:
   ros::Subscriber control_manager_diag_subscriber_;
   ros::Subscriber mavros_state_subscriber_;
   ros::Subscriber pathfinder_diagnostics_subscriber_;
+  ros::Subscriber uav_state_subscriber_;
 
   void                                controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnosticsConstPtr& msg);
   mrs_msgs::ControlManagerDiagnostics control_manager_diag_;
@@ -117,11 +120,16 @@ private:
 
   void               mavrosStateCallback(const mavros_msgs::StateConstPtr& msg);
   mavros_msgs::State mavros_state_;
-  bool               got_mavros_state_ = true;
+  bool               got_mavros_state_ = false;
+
+  void               uavStateCallback(const mrs_msgs::UavStateConstPtr& msg);
+  mrs_msgs::UavState uav_state_;
+  bool               got_uav_state_ = false;
+
 
   void                            pathfinderDiagnosticsCallback(const mrs_msgs::PathfinderDiagnosticsConstPtr& msg);
   mrs_msgs::PathfinderDiagnostics pathfinder_diagnostics_;
-  bool                            got_pathfinder_diagnostics_ = true;
+  bool                            got_pathfinder_diagnostics_ = false;
 
   // | --------------------- timer callbacks -------------------- |
 
@@ -157,6 +165,10 @@ private:
 
   bool disarm();
   bool takeoff();
+
+  void info_goto(std::string info);
+  void info_goto(double rate, std::string info);
+  void abort_goto(std::string info);
 
   void info_takeoff(std::string);
   void info_takeoff(double rate, std::string);
@@ -196,6 +208,7 @@ MrsActionlibInterface::MrsActionlibInterface() {
   mavros_state_subscriber_ = nh_.subscribe("mavros_state_in", 1, &MrsActionlibInterface::mavrosStateCallback, this, ros::TransportHints().tcpNoDelay());
   pathfinder_diagnostics_subscriber_ =
       nh_.subscribe("pathfinder_diagnostics_in", 1, &MrsActionlibInterface::pathfinderDiagnosticsCallback, this, ros::TransportHints().tcpNoDelay());
+  uav_state_subscriber_ = nh_.subscribe("uav_state_in", 1, &MrsActionlibInterface::uavStateCallback, this, ros::TransportHints().tcpNoDelay());
 
   // | --------------------- timer callbacks -------------------- |
 
@@ -345,6 +358,17 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
     return;
   }
 
+  if (!got_uav_state_) {
+    ROS_WARN_STREAM_THROTTLE(1.0, "[MrsActionlibInterface]: main timer: waiting for uav_state!");
+    return;
+  }
+
+  if (!got_pathfinder_diagnostics_) {
+    ROS_WARN_STREAM_THROTTLE(1.0, "[MrsActionlibInterface]: main timer: waiting for pathfinder_diagnostics!");
+    return;
+  }
+
+
   /* first run after we have all the data //{ */
 
   if (!have_all_data_) {
@@ -416,8 +440,6 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
 
         ROS_INFO("[MrsActionlibInterface]: in switch for GOTO");
 
-        info_landing("Call for goto");
-
         mrs_msgs::Vec4 srv;
         srv.request.goal[0] = action_server_goal_.goto_x;
         srv.request.goal[1] = action_server_goal_.goto_y;
@@ -430,18 +452,20 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
 
           if (srv.response.success) {
 
-            ROS_INFO("Service call for goto successful");
+            ROS_INFO("[MrsActionlibInterface]: Service call for goto successful");
+            goto_in_progress_      = true;
+            fresh_pathfinder_diag_ = false; // we need a fresh pathfinder diagnostics message, and evaluate it in the goto timer
 
           } else {
 
-            ROS_ERROR("Service call for goto failed");
+            ROS_ERROR("[MrsActionlibInterface]: Service call for goto failed");
 
             break;
           }
 
         } else {
 
-          ROS_ERROR("Service call for goto failed");
+          ROS_ERROR("[MrsActionlibInterface]: Service call for goto failed");
           break;
         }
         break;
@@ -755,82 +779,24 @@ void MrsActionlibInterface::callbackLandingTimer([[maybe_unused]] const ros::Tim
 
 void MrsActionlibInterface::callbackGotoTimer([[maybe_unused]] const ros::TimerEvent& te) {
 
+  ROS_INFO_STREAM_THROTTLE(1.0, "goto " << goto_in_progress_ << "  fresh diag  "  << fresh_pathfinder_diag_ << " idle: " << uint8_t(pathfinder_diagnostics_.idle == true));
+
   if (!goto_in_progress_) {
     return;
   }
-    
-  /*   if (!landing_in_progress_) { */
-  /*     if (landing_state_ != LANDING_INITIAL) { */
-  /*       changeLandingState(LANDING_INITIAL); */
-  /*     } */
-  /*     return; */
-  /*   } */
+  if (goto_in_progress_ && !fresh_pathfinder_diag_) {
+    info_goto(1.0, "waiting for fresh pathfinder diagnostics ");
+    return;
+  }
 
-  /*   switch (landing_state_) { */
+  if (pathfinder_diagnostics_.idle == true) {
+    goto_in_progress_ = false;
+    info_goto(1.0, "goal reached");
+    // TODO: succes to action server
 
-  /*     case LANDING_INITIAL: { */
-
-  /*       // sanity check: */
-  /*       if (control_manager_diag_.flying_normally != true) { */
-  /*         abort_landing("Cannot land, not flying normally!"); */
-  /*         break; */
-  /*       } */
-
-  /*       info_landing("Call for landing"); */
-
-  /*       std_srvs::Trigger srv; */
-
-  /*       bool res = srv_client_land_.call(srv); */
-
-  /*       if (res) { */
-
-  /*         if (srv.response.success) { */
-
-  /*           info_landing("Service call for landing successful"); */
-  /*           changeLandingState(LANDING); */
-
-  /*         } else { */
-
-  /*           abort_landing("landing failed: " + std::string(srv.response.message)); */
-  /*           break; */
-  /*         } */
-
-  /*       } else { */
-
-  /*         abort_landing("service call for landing failed"); */
-  /*         break; */
-  /*       } */
-  /*     } */
-
-  /*     case LANDING: { */
-
-  /*       info_landing(1.0, "landing"); */
-
-  /*       if (control_manager_diag_.active_tracker != "LandoffTracker" && last_tracker_ == "LandoffTracker") { */
-  /*         changeLandingState(LANDING_FINISHED); */
-  /*       } */
-
-  /*       last_tracker_ = control_manager_diag_.active_tracker; */
-  /*       break; */
-  /*     } */
-
-  /*     case LANDING_FINISHED: { */
-
-  /*       action_server_result_.success = true; */
-  /*       action_server_result_.message = "Landing completed"; */
-  /*       info_landing("Landing completed"); */
-  /*       command_server_ptr_->setSucceeded(action_server_result_); */
-
-  /*       landing_in_progress_ = false; */
-  /*       changeMainState(LANDED); */
-  /*       changeLandingState(LANDING_INITIAL); */
-  /*       break; */
-
-  /*     } */
-
-
-  /*     break; */
-  /*   } */
+  } else {
+    info_goto(1.0, "Goto is in progress");
+  }
 }
 
 //}
@@ -873,12 +839,23 @@ void MrsActionlibInterface::mavrosStateCallback(const mavros_msgs::StateConstPtr
 
 //}
 
+/*  uavStateCallback()//{ */
+
+void MrsActionlibInterface::uavStateCallback(const mrs_msgs::UavStateConstPtr& msg) {
+
+  got_uav_state_ = true;
+  uav_state_     = *msg;
+}
+
+//}
+
 /*  pathfinderDiagnosticsCallback()//{ */
 
 void MrsActionlibInterface::pathfinderDiagnosticsCallback(const mrs_msgs::PathfinderDiagnosticsConstPtr& msg) {
 
   got_pathfinder_diagnostics_ = true;
   pathfinder_diagnostics_     = *msg;
+  fresh_pathfinder_diag_      = true;
 }
 
 //}
@@ -994,6 +971,18 @@ bool MrsActionlibInterface::disarm() {
 
 //}
 
+/* info_goto() //{ */
+
+void MrsActionlibInterface::info_goto(std::string info) {
+  ROS_INFO_STREAM("[MrsActionlibInterface]-------------->[GotoStateMachine]: " << info);
+}
+
+void MrsActionlibInterface::info_goto(double rate, std::string info) {
+  ROS_INFO_STREAM_THROTTLE(rate, "[MrsActionlibInterface]-------------->[GotoStateMachine]: " << info);
+}
+
+//}
+
 /* info_takeoff() //{ */
 
 void MrsActionlibInterface::info_takeoff(std::string info) {
@@ -1014,6 +1003,20 @@ void MrsActionlibInterface::info_landing(std::string info) {
 
 void MrsActionlibInterface::info_landing(double rate, std::string info) {
   ROS_INFO_STREAM_THROTTLE(rate, "[MrsActionlibInterface]-------------->[LandingStateMachine]: " << info);
+}
+
+//}
+
+/* abort_goto() //{ */
+
+void MrsActionlibInterface::abort_goto(std::string info) {
+
+  goto_in_progress_ = false;
+  ROS_INFO_STREAM("[MrsActionlibInterface]-------------->[GotoStateMachine]: " << info);
+
+  action_server_result_.success = false;
+  action_server_result_.message = info;
+  command_server_ptr_->setAborted(action_server_result_);
 }
 
 //}
@@ -1094,3 +1097,4 @@ int main(int argc, char** argv) {
 }
 
 //}
+

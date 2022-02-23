@@ -44,6 +44,8 @@
       <remap from="~takeoff_out" to="uav_manager/takeoff" />
       <remap from="~land_out" to="uav_manager/land" />
       <remap from="~pathfinder_goto_out" to="pathfinder/goto" />
+      <remap from="~pathfinder_diagnostics_in" to="pathfinder/diagnostics" />
+      <remap from="~uav_state_in" to="odometry/uav_state" />
 
     </node>
 
