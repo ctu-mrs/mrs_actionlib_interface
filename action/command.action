@@ -14,5 +14,4 @@ bool success
 string message
 ---
 # Define a feedback message
-float64 percent_complete
 string message

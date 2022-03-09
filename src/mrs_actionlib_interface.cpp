@@ -143,6 +143,7 @@ private:
   void callbackFeedbackTimer(const ros::TimerEvent& te);
 
   ros::Timer main_timer_;
+  ros::Timer feedback_timer_;
   ros::Timer takeoff_timer_;
   ros::Timer landing_timer_;
   ros::Timer goto_timer_;
@@ -211,10 +212,11 @@ MrsActionlibInterface::MrsActionlibInterface() {
 
   // | --------------------- timer callbacks -------------------- |
 
-  main_timer_    = nh_.createTimer(ros::Rate(1), &MrsActionlibInterface::callbackMainTimer, this);
-  takeoff_timer_ = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackTakeoffTimer, this);
-  landing_timer_ = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackLandingTimer, this);
-  goto_timer_    = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackGotoTimer, this);
+  main_timer_     = nh_.createTimer(ros::Rate(1), &MrsActionlibInterface::callbackMainTimer, this);
+  feedback_timer_ = nh_.createTimer(ros::Rate(1), &MrsActionlibInterface::callbackFeedbackTimer, this);
+  takeoff_timer_  = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackTakeoffTimer, this);
+  landing_timer_  = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackLandingTimer, this);
+  goto_timer_     = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackGotoTimer, this);
 
   srv_client_mavros_arm_         = nh_.serviceClient<mavros_msgs::CommandBool>("mavros_arm_out");
   srv_client_mavros_set_mode_    = nh_.serviceClient<mavros_msgs::SetMode>("mavros_set_mode_out");
@@ -825,6 +827,8 @@ void MrsActionlibInterface::callbackGotoTimer([[maybe_unused]] const ros::TimerE
 /* callbackFeedbackTimer() //{ */
 
 void MrsActionlibInterface::callbackFeedbackTimer([[maybe_unused]] const ros::TimerEvent& te) {
+  action_server_feedback_.message = "Current state:" + uav_state_str[state_];
+  command_server_ptr_->publishFeedback(action_server_feedback_);
 }
 
 //}
