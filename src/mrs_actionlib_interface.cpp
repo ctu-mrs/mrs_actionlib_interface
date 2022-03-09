@@ -53,7 +53,7 @@ private:
   ros::Time offboard_time_;
   bool      set_offboard_called_ = false;
 
-  double pos_error_threshold_ = 0.1;
+  double pos_error_threshold_ = 0.5;
 
   ros::Time motors_on_time_;
 
@@ -107,7 +107,6 @@ private:
 
   static const mrs_actionlib_interface::commandGoal _ACTION_SERVER_GOAL_;
   mrs_actionlib_interface::commandGoal              action_server_goal_;
-  mrs_actionlib_interface::commandFeedback          action_server_feedback_;
   mrs_actionlib_interface::commandResult            action_server_result_;
 
   // | --------------------- subscribers -------------------- |
@@ -348,7 +347,6 @@ void MrsActionlibInterface::actionCallbackPreempt() {
 /* callbackMainTimer() //{ */
 
 void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerEvent& te) {
-
   if (!got_control_manager_diag_) {
     ROS_WARN_STREAM_THROTTLE(1.0, "[MrsActionlibInterface]: main timer: waiting for control_manager_diagnostics!");
     return;
@@ -454,6 +452,7 @@ void MrsActionlibInterface::callbackMainTimer([[maybe_unused]] const ros::TimerE
             ROS_INFO("[MrsActionlibInterface]: Service call for goto successful");
             goto_in_progress_      = true;
             fresh_pathfinder_diag_ = false;  // we need a fresh pathfinder diagnostics message, and evaluate it in the goto timer
+            changeMainState(GOTO);
 
           } else {
 
@@ -801,7 +800,7 @@ void MrsActionlibInterface::callbackGotoTimer([[maybe_unused]] const ros::TimerE
   strs2 << std::fixed << std::setprecision(2) << pos_error;
   std::string pos_error_str = strs2.str();
 
-  if (pathfinder_diagnostics_.idle == true && !control_manager_diag_.tracker_status.have_goal) {
+  if (pathfinder_diagnostics_.idle && !control_manager_diag_.tracker_status.have_goal) {
     goto_in_progress_ = false;
 
     if (pos_error < pos_error_threshold_) {
@@ -809,11 +808,13 @@ void MrsActionlibInterface::callbackGotoTimer([[maybe_unused]] const ros::TimerE
       action_server_result_.message = "Goto goal reached, position error: " + best_goal_err_str;
       info_goto("Goto goal reached, position error: " + best_goal_err_str);
       command_server_ptr_->setSucceeded(action_server_result_);
+      changeMainState(IDLE_FLYING);
     } else {
       action_server_result_.success = false;
       action_server_result_.message = "Goal not reachable, final error in position: " + pos_error_str;
       info_goto("Goal not reachable, final error in position: " + pos_error_str);
       command_server_ptr_->setAborted(action_server_result_);
+      changeMainState(IDLE_FLYING);
     }
 
 
@@ -827,8 +828,28 @@ void MrsActionlibInterface::callbackGotoTimer([[maybe_unused]] const ros::TimerE
 /* callbackFeedbackTimer() //{ */
 
 void MrsActionlibInterface::callbackFeedbackTimer([[maybe_unused]] const ros::TimerEvent& te) {
-  action_server_feedback_.message = "Current state:" + uav_state_str[state_];
-  command_server_ptr_->publishFeedback(action_server_feedback_);
+
+  if (!command_server_ptr_->isActive()) {
+    return;
+  }
+
+  mrs_actionlib_interface::commandFeedback action_server_feedback;
+  action_server_feedback.message = "Current state: " + uav_state_str[state_];
+
+  if (state_ == GOTO) {
+
+    if (!fresh_pathfinder_diag_) {
+      return;
+    }
+
+    action_server_feedback.goto_distance_to_reference = sqrt(pow(uav_state_.pose.position.x - pathfinder_diagnostics_.desired_reference.x, 2) +
+                                                             pow(uav_state_.pose.position.y - pathfinder_diagnostics_.desired_reference.y, 2) +
+                                                             pow(uav_state_.pose.position.z - pathfinder_diagnostics_.desired_reference.z, 2));
+  } else {
+    action_server_feedback.goto_distance_to_reference = 0.0;
+  }
+
+  command_server_ptr_->publishFeedback(action_server_feedback);
 }
 
 //}
@@ -1122,4 +1143,3 @@ int main(int argc, char** argv) {
 }
 
 //}
-

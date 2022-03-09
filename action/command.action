@@ -15,3 +15,4 @@ string message
 ---
 # Define a feedback message
 string message
+float64 goto_distance_to_reference

@@ -31,9 +31,6 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
   )
 
-## Declare a C++ library
-add_library(MrsActionlibInterface src/mrs_actionlib_interface.cpp)
-
 add_executable(mrs_actionlib_interface src/mrs_actionlib_interface.cpp)
 add_dependencies(mrs_actionlib_interface ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(mrs_actionlib_interface
