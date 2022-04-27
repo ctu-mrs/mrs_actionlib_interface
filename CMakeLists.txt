@@ -18,7 +18,6 @@ generate_messages(DEPENDENCIES actionlib_msgs)
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES MrsActionlibInterface
   CATKIN_DEPENDS roscpp mrs_lib mrs_msgs
   )
 
