@@ -13,6 +13,11 @@ find_package(catkin REQUIRED COMPONENTS
   actionlib_msgs
   )
 
+add_message_files(
+  FILES
+  State.msg
+  )
+
 add_action_files(DIRECTORY action FILES command.action)
 generate_messages(DEPENDENCIES actionlib_msgs)
 

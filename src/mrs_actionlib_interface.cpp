@@ -5,6 +5,8 @@
 #include <mrs_actionlib_interface/commandAction.h>
 #include <actionlib/server/simple_action_server.h>
 
+#include <mrs_actionlib_interface/State.h>
+
 #include <mrs_msgs/ControlManagerDiagnostics.h>
 #include <mrs_msgs/ValidateReference.h>
 #include <mrs_msgs/Vec4.h>
@@ -132,6 +134,9 @@ private:
   void                            pathfinderDiagnosticsCallback(const mrs_msgs::PathfinderDiagnosticsConstPtr& msg);
   mrs_msgs::PathfinderDiagnostics pathfinder_diagnostics_;
   bool                            got_pathfinder_diagnostics_ = false;
+ 
+  // | --------------------- publishers -------------------- |
+  ros::Publisher state_publisher_;
 
   // | --------------------- timer callbacks -------------------- |
 
@@ -140,12 +145,14 @@ private:
   void callbackLandingTimer(const ros::TimerEvent& te);
   void callbackGotoTimer(const ros::TimerEvent& te);
   void callbackFeedbackTimer(const ros::TimerEvent& te);
+  void callbackStateTimer(const ros::TimerEvent& te);
 
   ros::Timer main_timer_;
   ros::Timer feedback_timer_;
   ros::Timer takeoff_timer_;
   ros::Timer landing_timer_;
   ros::Timer goto_timer_;
+  ros::Timer state_timer_;
 
   // | --------------------- service clients -------------------- |
 
@@ -209,13 +216,18 @@ MrsActionlibInterface::MrsActionlibInterface() {
       nh_.subscribe("pathfinder_diagnostics_in", 1, &MrsActionlibInterface::pathfinderDiagnosticsCallback, this, ros::TransportHints().tcpNoDelay());
   uav_state_subscriber_ = nh_.subscribe("uav_state_in", 1, &MrsActionlibInterface::uavStateCallback, this, ros::TransportHints().tcpNoDelay());
 
+  
+  // | --------------------- publishers -------------------- |
+  state_publisher_ = nh_.advertise<mrs_actionlib_interface::State>("state", 1);
+
   // | --------------------- timer callbacks -------------------- |
 
-  main_timer_     = nh_.createTimer(ros::Rate(1), &MrsActionlibInterface::callbackMainTimer, this);
-  feedback_timer_ = nh_.createTimer(ros::Rate(1), &MrsActionlibInterface::callbackFeedbackTimer, this);
+  main_timer_     = nh_.createTimer(ros::Rate(1),  &MrsActionlibInterface::callbackMainTimer, this);
+  feedback_timer_ = nh_.createTimer(ros::Rate(1),  &MrsActionlibInterface::callbackFeedbackTimer, this);
   takeoff_timer_  = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackTakeoffTimer, this);
   landing_timer_  = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackLandingTimer, this);
   goto_timer_     = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackGotoTimer, this);
+  state_timer_    = nh_.createTimer(ros::Rate(10), &MrsActionlibInterface::callbackStateTimer, this);
 
   srv_client_mavros_arm_         = nh_.serviceClient<mavros_msgs::CommandBool>("mavros_arm_out");
   srv_client_mavros_set_mode_    = nh_.serviceClient<mavros_msgs::SetMode>("mavros_set_mode_out");
@@ -850,6 +862,17 @@ void MrsActionlibInterface::callbackFeedbackTimer([[maybe_unused]] const ros::Ti
   }
 
   command_server_ptr_->publishFeedback(action_server_feedback);
+}
+
+//}
+
+/* callbackStateTimer() //{ */
+
+void MrsActionlibInterface::callbackStateTimer([[maybe_unused]] const ros::TimerEvent& te) {
+  mrs_actionlib_interface::State state;
+  state.state = state_;
+
+  state_publisher_.publish(state);
 }
 
 //}
