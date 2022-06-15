@@ -19,7 +19,8 @@ The commands are defined in the command.action file, in the action folder:
 # Define the goal
 uint8 COMMAND_TAKEOFF=0
 uint8 COMMAND_LAND=1
-uint8 COMMAND_GOTO=2
+uint8 COMMAND_GOTO_PATHFINDER=2
+uint8 COMMAND_GOTO_DIRECT=3
 uint8 command
 
 float64 goto_x
@@ -46,7 +47,8 @@ there are three possible commands, specified as numbers:
 ```
 uint8 COMMAND_TAKEOFF=0
 uint8 COMMAND_LAND=1
-uint8 COMMAND_GOTO=2
+uint8 COMMAND_GOTO_PATHFINDER=2
+uint8 COMMAND_GOTO_DIRECT=3
 ```
 When the GOTO command is issued, fill also the goto variables to set the reference:
 

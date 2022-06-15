@@ -40,12 +40,14 @@
       <remap from="~mavros_arm_out" to="mavros/cmd/arming" />
       <remap from="~mavros_set_mode_out" to="mavros/set_mode" />
       <remap from="~validate_reference_out" to="control_manager/validate_reference_2d" />
+      <remap from="~reference_out" to="control_manager/reference" />
       <remap from="~motors_out" to="control_manager/motors" />
       <remap from="~takeoff_out" to="uav_manager/takeoff" />
       <remap from="~land_out" to="uav_manager/land" />
       <remap from="~pathfinder_goto_out" to="pathfinder/goto" />
       <remap from="~pathfinder_diagnostics_in" to="pathfinder/diagnostics" />
-      <remap from="~uav_state_in" to="odometry/uav_state" />
+      <remap from="~pos_cmd_in" to="control_manager/position_cmd" />
+      <remap from="~odom_in" to="odometry/odom_main" />
 
     </node>
 
