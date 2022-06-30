@@ -62,7 +62,7 @@ private:
   ros::Time offboard_time_;
   bool      set_offboard_called_ = false;
 
-  double pos_error_threshold_ = 0.5;
+  double pos_error_threshold_ = 0.1;
 
   ros::Time motors_on_time_;
 
